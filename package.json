@@ -1,6 +1,6 @@
 {
   "name": "@drungrin/paseo-sonar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A live trace of what an agent is doing, docked beside the chat.",
   "type": "module",
   "license": "MIT",

@@ -44,6 +44,7 @@ interface Row {
   /** What a receipt in the output makes of the call, and its word for it. */
   verdict?: "err" | "warn";
   outcome?: string;
+  receipt?: boolean;
   /** Text of a message, reply or thinking; replies and thinking grow chunk by chunk. */
   text?: string;
   callId?: string;
@@ -541,7 +542,7 @@ export class SonarModel {
     if (existing) {
       const wasRunning = existing.status === "running";
       // What an earlier update said and this one does not, it no longer says.
-      Object.assign(existing, { failure: undefined, exitCode: undefined, verdict: undefined, outcome: undefined, ...facts, status, detail, error });
+      Object.assign(existing, { failure: undefined, exitCode: undefined, verdict: undefined, outcome: undefined, receipt: undefined, ...facts, status, detail, error });
       if (wasRunning && status !== "running" && live) {
         existing.endedAt = at;
         existing.measured = true;
@@ -641,6 +642,7 @@ export class SonarModel {
           status === "running" ? (entry.background ? "background" : "")
           : status === "err" ? ""
           : row.outcome ? row.outcome
+          : row.receipt ? ""
           : exit !== undefined ? `exit ${exit}`
           : status === "ok" && row.provider?.startsWith("claude") && !row.task ? "exit 0"
           : "";

@@ -57,13 +57,21 @@ function pythonScript(words: Word[]): { path: string; rest: Word[] } | null {
 export function gsdCalls(line: string): GsdCall[] {
   const calls: GsdCall[] = [];
   const named = /gsd-path/i.test(line);
+  // `S=…/scripts; python3 $S/review_panel.py merge`: a folder set earlier in the line.
+  const folders = new Map<string, string>();
   for (const command of allCommands(line)) {
+    for (const word of command.words) {
+      const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.+)$/.exec(word.text);
+      if (!assignment) break;
+      folders.set(assignment[1]!, assignment[2]!);
+    }
     const found = pythonScript(programWords(command));
     if (!found) continue;
     const script = programName(found.path);
     if (!HELPERS.has(script)) continue;
     const rest = found.rest.map((word) => word.text);
-    const placed = named || /\/skills\/[^/]+\/scripts\/[^/]+$/.test(found.path.replace(/\\/g, "/")) || rest.includes("--repo");
+    const path = found.path.replace(/\\/g, "/").replace(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(?=\/)/, (whole, name: string) => folders.get(name) ?? whole);
+    const placed = named || /\/skills\/[^/]+\/scripts\/[^/]+$/.test(path) || rest.includes("--repo");
     if (!placed) continue;
     const cmd = /^[a-z][a-z0-9-]*$/.test(rest[0] ?? "") ? rest[0]! : "";
     calls.push({ script, cmd, args: cmd ? rest.slice(1) : rest });
@@ -395,7 +403,10 @@ function readFacts(receipt: Json, into: Reading): void {
     if (action === "block") into.warn("blocked", firstLine(text(receipt.route.reason), 60));
     else into.fact(action === "run-phase" ? join("next", text(receipt.route.phase)) : words(action));
   }
-  if (status === "committed" && text(receipt.commit)) into.fact(`committed ${short(text(receipt.commit))}`);
+  if (status === "committed" && text(receipt.commit)) {
+    into.word ??= "committed";
+    into.fact(short(text(receipt.commit)));
+  }
   if (isObject(receipt.selection) && isObject(receipt.selection.selected)) into.fact(text(receipt.selection.selected.model));
   if (typeof receipt.actionable === "number") {
     into.fact(`${receipt.actionable} actionable`);

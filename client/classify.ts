@@ -32,6 +32,8 @@ export interface Classified {
   verdict?: "err" | "warn";
   /** The receipt's word for how it went ("landed", "blocked"), shown in place of the exit code. */
   outcome?: string;
+  /** The output carried a receipt Sonar could read, which says more than the exit code. */
+  receipt?: boolean;
 }
 
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -309,6 +311,7 @@ function classifyDetail(call: ToolCallLike): Classified {
           ...(read?.verdict ? { verdict: read.verdict } : {}),
           ...(read?.word || read?.verdict ? { outcome: read.word ?? (read.verdict === "err" ? "failed" : "attention") } : {}),
           ...(read?.failure ? { failure: read.failure } : {}),
+          ...(read ? { receipt: true } : {}),
         };
       }
       const { title, family } = shellTitle(command);

@@ -21,6 +21,11 @@ describe("gsdCalls", () => {
     expect(gsdCalls(`python3 scripts/check_task_briefs.py ${REPO} --base 1a2b3c4`)[0]).toMatchObject({ script: "check_task_briefs.py", cmd: "" });
   });
 
+  it("follows a scripts folder set earlier in the line", () => {
+    expect(gsdCalls("S=.claude/skills/path/scripts; python3 -B $S/review_panel.py merge --kind wave --mode named")[0]).toMatchObject({ script: "review_panel.py", cmd: "merge" });
+    expect(gsdCalls("S=tools/bin; python3 -B ${S}/review_panel.py merge")).toEqual([]);
+  });
+
   it("leaves project scripts that only share a name", () => {
     expect(gsdCalls("python3 tools/isolation.py checkpoint")).toEqual([]);
     expect(gsdCalls("python3 -m isolation")).toEqual([]);
@@ -138,6 +143,14 @@ describe("readOutcome", () => {
     expect(readOutcome(fail, route)).toMatchObject({ verdict: "err", word: "failed", failure: "failed" });
   });
 
+  it("says committed once, from either receipt", () => {
+    const checkpoint = { script: "isolation.py", cmd: "checkpoint", args: [] };
+    const json = '{"commit": "b7f0c2d91e8a4b3c5d6e7f8091a2b3c4d5e6f708", "status": "committed"}';
+    const stamp = 'GSD-RECEIPT v1 {"cmd": "checkpoint", "commit": "b7f0c2d91e8a4b3c5d6e7f8091a2b3c4d5e6f708", "exit": 0, "outcome": "ok", "script": "isolation.py", "status": "committed"}';
+    expect(readOutcome(json, checkpoint)).toEqual({ word: "committed", facts: ["b7f0c2d"], stamped: false });
+    expect(readOutcome(`${stamp}\n${json}`, checkpoint)).toEqual({ word: "committed", facts: ["b7f0c2d"], stamped: true });
+  });
+
   it("keeps the helper's own facts beside a stamped line", () => {
     const merge = { script: "review_panel.py", cmd: "merge", args: [] };
     const output = [
@@ -188,6 +201,13 @@ describe("GSD Path rows", () => {
     ]);
     expect(silent).toMatchObject({ title: "Land T002", meta: "gsd-path · exit 0", status: "ok" });
     expect(question).toMatchObject({ meta: "gsd-path · question", metaTone: "warn", status: "ok" });
+  });
+
+  it("drops the exit code once a receipt has been read", () => {
+    const [merged] = rows([
+      shell("a", `S=${SKILL}; python3 -B $S/review_panel.py merge --kind wave --mode named`, '{"actionable": 3, "conflicts": 0, "families": ["gpt", "muse"]}'),
+    ]);
+    expect(merged).toMatchObject({ title: "Merge the wave panel", meta: "gsd-path · 3 actionable", status: "ok" });
   });
 
   it("leaves other Python scripts as they were", () => {

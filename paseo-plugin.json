@@ -1,0 +1,13 @@
+{
+  "id": "paseo-sonar",
+  "name": "Sonar",
+  "description": "A live trace of what an agent is doing, docked beside the chat.",
+  "media": [
+    "docs/screenshots/overview.png",
+    "docs/screenshots/panel-live.png",
+    "docs/screenshots/codex.png"
+  ],
+  "requirements": {
+    "paseo": ">=0.15.0"
+  }
+}

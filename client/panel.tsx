@@ -372,7 +372,7 @@ function RowItem(props: {
           ) : null}
         </View>
         {row.meta ? (
-          <Mono numberOfLines={1} style={{ fontSize: 11, color: row.metaTone === "err" ? withAlpha(colors.statusDanger, 0.85) : colors.foregroundMuted }}>
+          <Mono numberOfLines={1} style={{ fontSize: 11, color: row.metaTone === "err" ? withAlpha(colors.statusDanger, 0.85) : row.metaTone === "warn" ? colors.statusWarning : colors.foregroundMuted }}>
             {row.meta}
           </Mono>
         ) : null}

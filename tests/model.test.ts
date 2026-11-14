@@ -207,7 +207,7 @@ describe("SonarModel background subagents", () => {
     expect(view.activity).toBe("1 in background");
     const [first] = view.turns[0]!.rows;
     expect(view.turns[0]!.label).toBe("TURN 29");
-    expect(first).toMatchObject({ title: "Agent: build_T003", live: true, pinned: true, background: true, trailing: "1m 30s", meta: "general-purpose · background · from turn 28" });
+    expect(first).toMatchObject({ title: "Build T003", live: true, pinned: true, background: true, trailing: "1m 30s", meta: "builder · general-purpose · background · from turn 28" });
     expect(model.details(first!.key, T0 + 100_000)).toEqual({
       kind: "agent",
       task: "Segment-A operator script",
@@ -235,7 +235,7 @@ describe("SonarModel background subagents", () => {
     model.applySubagent(subagent("completed", 130));
     const view = model.view(T0 + 140_000, idle);
     expect(view.backgroundCount).toBe(0);
-    const row = view.turns.flatMap((turn) => turn.rows).find((candidate) => candidate.title === "Agent: build_T003");
+    const row = view.turns.flatMap((turn) => turn.rows).find((candidate) => candidate.title === "Build T003");
     expect(row).toMatchObject({ status: "ok", trailing: "2m 00s", live: false });
   });
 

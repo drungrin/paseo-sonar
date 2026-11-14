@@ -7,6 +7,7 @@ Sonar docks a live trace of an agent's work beside the chat. Each tool call, mes
 - **Route**: the last nine stations the work went through, old to new, the live one lit and a failed one red.
 - **Turns**: the newest turn whole and earlier ones folded; commands named by what they do (`dispatch_driver.py finish T002`), with `python3 · exit 0` and their time. Open a row for the full command, its output, an edit's diff or a subagent's last steps.
 - **Counts**: rows per station in the session.
+- **GSD Path**: helper calls read by what they do (`Land T004`, `Transition plan → build`), with their outcome taken from the helper's receipt rather than the exit code (a blocked landing or a failed handoff check turns red), and subagents shown by their task (`Build T003 · builder`).
 
 It reads Paseo's own timeline, so it works with Claude, Codex and every other provider Paseo runs.
 

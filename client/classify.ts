@@ -1,4 +1,5 @@
 // Which station a tool call belongs to and how to name it. Shell command lines are read in ./shell.
+import { gsdAgent, gsdCalls, gsdTitle, primaryCall, readOutcome } from "./gsd";
 import { isMemoryPath, shellStation, shellTitle, shellVerb } from "./shell";
 import type { StationId } from "./stations";
 
@@ -27,6 +28,10 @@ export interface Classified {
   exitCode?: number;
   /** The whole command line of a shell call, for its expanded row. */
   command?: string;
+  /** What a receipt in the output makes of a call that otherwise looks fine. */
+  verdict?: "err" | "warn";
+  /** The receipt's word for how it went ("landed", "blocked"), shown in place of the exit code. */
+  outcome?: string;
 }
 
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -288,9 +293,26 @@ function classifyDetail(call: ToolCallLike): Classified {
     case "shell": {
       const command = str(detail.command);
       const output = str(detail.output);
+      const exit = num(detail.exitCode) ?? (typeof detail.exitCode === "string" && /^\d+$/.test(detail.exitCode) ? Number(detail.exitCode) : undefined);
+      const helper = primaryCall(gsdCalls(command));
+      if (helper) {
+        const title = gsdTitle(helper);
+        const read = call.status === "running" ? null : readOutcome(outputText(detail), helper);
+        return {
+          station: shellStation(command),
+          title,
+          doing: `GSD Path: ${title}`,
+          tool: "gsd-path",
+          facts: read?.facts ?? [],
+          command,
+          ...(exit !== undefined ? { exitCode: exit } : {}),
+          ...(read?.verdict ? { verdict: read.verdict } : {}),
+          ...(read?.word || read?.verdict ? { outcome: read.word ?? (read.verdict === "err" ? "failed" : "attention") } : {}),
+          ...(read?.failure ? { failure: read.failure } : {}),
+        };
+      }
       const { title, family } = shellTitle(command);
       const tally = call.status === "running" ? undefined : testSummary(output);
-      const exit = num(detail.exitCode) ?? (typeof detail.exitCode === "string" && /^\d+$/.test(detail.exitCode) ? Number(detail.exitCode) : undefined);
       return {
         station: shellStation(command),
         title: title || "Shell command",
@@ -305,12 +327,14 @@ function classifyDetail(call: ToolCallLike): Classified {
       const description = oneLine(str(detail.description), 60);
       const kind = str(detail.subAgentType);
       const actions = Array.isArray(detail.actions) ? detail.actions.length : 0;
+      const gsd = gsdAgent(description);
+      const title = gsd?.title ?? (description ? `Agent: ${description}` : "Subagent");
       return {
         station: "agents",
-        title: description ? `Agent: ${description}` : "Subagent",
-        doing: description ? `Delegating: ${description}` : "Delegating to a subagent",
+        title,
+        doing: gsd ? `Delegating: ${gsd.title}` : description ? `Delegating: ${description}` : "Delegating to a subagent",
         tool,
-        facts: [kind, actions ? `${actions} ${actions === 1 ? "action" : "actions"}` : ""].filter(Boolean),
+        facts: [...(gsd?.facts ?? []), kind, actions ? `${actions} ${actions === 1 ? "action" : "actions"}` : ""].filter(Boolean),
       };
     }
     case "plan":
@@ -328,7 +352,10 @@ function classifyDetail(call: ToolCallLike): Classified {
 
 /** Tools known by name, as station, title and headline; `input` is the call's raw input. */
 type Naming = (input: Record<string, unknown>, name: string) => [StationId, string, string];
-const agentTitle = (input: Record<string, unknown>) => (str(input.description) ? `Agent: ${oneLine(str(input.description), 60)}` : "Subagent");
+const agentTitle = (input: Record<string, unknown>) => {
+  const description = oneLine(str(input.description), 60);
+  return gsdAgent(description)?.title ?? (description ? `Agent: ${description}` : "Subagent");
+};
 const BY_NAME: Record<string, Naming> = {
   Skill: (input) => ["skills", `Skill ${str(input.skill) || str(input.command)}`.trim(), "Loading a skill"],
   ToolSearch: () => ["skills", "Load tools", "Loading tools"],

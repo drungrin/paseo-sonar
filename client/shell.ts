@@ -5,7 +5,7 @@ import type { StationId } from "./stations";
 
 // ---- Reading a line ---------------------------------------------------------------------------
 
-interface Word {
+export interface Word {
   /** The word without its quotes: `"a b"` reads `a b`. */
   text: string;
   /** The word as written, quotes included. */
@@ -245,7 +245,7 @@ function reachesNetwork(words: Word[]): boolean {
 }
 
 /** Every command of a line, those written inside `$(…)` and backticks included. */
-function allCommands(line: string, depth = 0): Command[] {
+export function allCommands(line: string, depth = 0): Command[] {
   const commands = readCommands(line);
   if (depth > 3) return commands;
   return commands.flatMap((command) => [command, ...command.inner.flatMap((body) => allCommands(body, depth + 1))]);
@@ -270,9 +270,9 @@ export function shellStation(line: string): StationId {
 // ---- What a row calls a line ------------------------------------------------------------------
 
 /** Programs that run a script named after their options. */
-const INTERPRETERS = /^(?:python[\d.]*|py|node|nodejs|deno|bun|tsx|ts-node|bash|sh|zsh|dash|fish|ruby|perl|php|lua|Rscript)$/;
+export const INTERPRETERS = /^(?:python[\d.]*|py|node|nodejs|deno|bun|tsx|ts-node|bash|sh|zsh|dash|fish|ruby|perl|php|lua|Rscript)$/;
 /** Interpreter options followed by a value. */
-const INTERPRETER_VALUES = new Set(["-W", "-X", "--require", "-r", "--import", "--loader", "--env-file", "-o"]);
+export const INTERPRETER_VALUES = new Set(["-W", "-X", "--require", "-r", "--import", "--loader", "--env-file", "-o"]);
 
 export interface ShellTitle {
   /** What the command does: `dispatch_driver.py finish T002`, `npm test -- unit`. */

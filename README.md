@@ -35,6 +35,16 @@ Screenshots show a throwaway demo project and agents.
 
 It works with every provider Paseo runs, because it reads Paseo's own timeline rather than a provider's logs. How much a row says depends on what the provider reports: Claude does not report a fetch's status or size, Codex reports exit codes and diffs, and an agent that reports a tool by name only gets a plainer row.
 
+### GSD Path
+
+When the agent drives a [GSD Path](https://github.com/open-gsd/gsd-path) pipeline, Sonar reads its helper calls and subagents from the same timeline, with no extra access:
+
+- **Helpers by what they do.** `python3 -B …/dispatch_driver.py finish --task-id T004` reads `Land T004`; `pipeline_state.py transition --expect-phase plan --set-phase build` reads `Transition plan → build`; `model_policy.py resolve --assignment build_T003` reads `Model for T003`. Under the title, `gsd-path` and what the helper's receipt says: `landed · T004 9aea29d`, `8 actionable`, `next build`, `committed f12b503`. A line that chains several helpers is named after the one that moves the pipeline.
+- **Outcome from the receipt, not the exit code.** A blocked landing, a model the host cannot run and a failed handoff check (`handoff validation failed: …`, which exits 0 when the line ends in `echo`) turn the row red with the reason, even though the command ended well. A question from a builder, or a route that blocks, turns its line amber.
+- **Subagents by their task.** GSD Path names its subagents after their work (`build_T003`, `review_wave_1_cycle_2_panel_gpt`); Sonar shows them as `Build T003 · builder` and `Review wave 1 · panel gpt · panelist · cycle 2`.
+
+Helpers are recognized by file name and place (a skill's `scripts/` folder, a path naming `gsd-path`, or `--repo`), so a project script that only shares a name stays a plain command. An orchestrator often sends a helper's output to a file or through a filter; then there is no receipt to read and the row keeps the exit code, as any command does. Releases of GSD Path that print a `GSD-RECEIPT v1 {…}` line on stderr are read from that line first: `script`, `cmd`, `outcome` (`ok`, `warn` or `fail`), `status`, and optionally `reason` and `commit`. Unknown or unreadable receipts change nothing.
+
 ## Open it
 
 - Press **Sonar** above an agent's composer.
@@ -93,7 +103,7 @@ npm test
 npm run typecheck
 ```
 
-`client/shell.ts` reads shell command lines into commands, for their titles and stations. `client/classify.ts` turns a tool call into a station, a title and facts. `client/model.ts` keeps turns and rows from history and live events and builds what the panel draws. `client/use-sonar.ts` loads the history, subscribes to the live stream and holds back the events that arrive while the history loads. `client/panel.tsx` draws it.
+`client/shell.ts` reads shell command lines into commands, for their titles and stations. `client/gsd.ts` recognizes GSD Path helper calls and subagents and reads their receipts. `client/classify.ts` turns a tool call into a station, a title and facts. `client/model.ts` keeps turns and rows from history and live events and builds what the panel draws. `client/use-sonar.ts` loads the history, subscribes to the live stream and holds back the events that arrive while the history loads. `client/panel.tsx` draws it.
 
 After a change, `paseo plugin reload paseo-sonar` rebuilds the bundle.
 

@@ -41,6 +41,9 @@ interface Row {
   failure?: string;
   exitCode?: number;
   command?: string;
+  /** What a receipt in the output makes of the call, and its word for it. */
+  verdict?: "err" | "warn";
+  outcome?: string;
   /** Text of a message, reply or thinking; replies and thinking grow chunk by chunk. */
   text?: string;
   callId?: string;
@@ -126,7 +129,7 @@ export interface RowView {
   title: string;
   /** The line under the title: "python3 · exit 0", "Edit · +12 −3". */
   meta: string;
-  metaTone: "normal" | "err";
+  metaTone: "normal" | "err" | "warn";
   status: RowStatus;
   /** Running now; the panel draws a spinner and the elapsed time. */
   live: boolean;
@@ -528,14 +531,17 @@ export class SonarModel {
   private applyTool(call: ToolCallLike & { callId: string }, at: number, turnId: string | undefined, live: boolean, provider?: string): void {
     const facts = classify(call);
     const existing = this.byCall.get(call.callId);
-    const status: RowStatus =
+    const own: RowStatus =
       call.status === "running" ? "running" : call.status === "failed" ? "err" : call.status === "canceled" ? "canceled" : "ok";
-    const taskId = status === "ok" ? backgroundTaskId(call) : undefined;
+    // A call that ended well but whose receipt says it failed (a blocked landing, a failed gate) failed.
+    const status: RowStatus = own === "ok" && facts.verdict === "err" ? "err" : own;
+    const taskId = own === "ok" ? backgroundTaskId(call) : undefined;
     const detail = keep(call.detail) as Record<string, unknown>;
     const error = errorText(call.error) || undefined;
     if (existing) {
       const wasRunning = existing.status === "running";
-      Object.assign(existing, { ...facts, status, detail, error });
+      // What an earlier update said and this one does not, it no longer says.
+      Object.assign(existing, { failure: undefined, exitCode: undefined, verdict: undefined, outcome: undefined, ...facts, status, detail, error });
       if (wasRunning && status !== "running" && live) {
         existing.endedAt = at;
         existing.measured = true;
@@ -621,7 +627,7 @@ export class SonarModel {
     const modelFacts = [agent.model ? shortModel(agent.model) : "", agent.thinking ?? ""].filter(Boolean);
 
     // What a row's line under the title says.
-    const metaOf = (entry: (typeof resolved)[number]): { meta: string; tone: "normal" | "err" } => {
+    const metaOf = (entry: (typeof resolved)[number]): { meta: string; tone: RowView["metaTone"] } => {
       const { row, status } = entry;
       if (row.kind === "thinking") return { meta: modelFacts.join(" · "), tone: "normal" };
       if (row.kind !== "tool") return { meta: row.facts.join(" · "), tone: status === "err" ? "err" : "normal" };
@@ -630,14 +636,17 @@ export class SonarModel {
       }
       if (row.command !== undefined) {
         const exit = row.task?.exitCode ?? row.exitCode;
+        // A receipt's word says more than the exit code of the last command in the line.
         const exitText =
           status === "running" ? (entry.background ? "background" : "")
           : status === "err" ? ""
+          : row.outcome ? row.outcome
           : exit !== undefined ? `exit ${exit}`
           : status === "ok" && row.provider?.startsWith("claude") && !row.task ? "exit 0"
           : "";
         const facts = status === "err" && row.failure ? [row.failure] : row.facts;
-        return { meta: [row.tool, exitText, ...facts].filter(Boolean).join(" · "), tone: status === "err" ? "err" : "normal" };
+        const tone = status === "err" ? "err" : status === "ok" && row.verdict === "warn" ? "warn" : "normal";
+        return { meta: [row.tool, exitText, ...facts].filter(Boolean).join(" · "), tone };
       }
       const facts = status === "err" && row.failure ? [row.failure] : row.facts;
       return { meta: [row.tool, ...(entry.background ? ["background"] : []), ...facts].filter(Boolean).join(" · "), tone: status === "err" ? "err" : "normal" };
@@ -645,6 +654,8 @@ export class SonarModel {
     const trailingOf = (row: Row, status: RowStatus, endedAt: number | undefined): string => {
       if (status === "running") return formatDuration(now - row.startedAt);
       if (status === "err") {
+        // A receipt's failure behind exit 0 reads by its own word: "blocked", "failed".
+        if (row.verdict === "err" && (row.exitCode ?? 0) === 0) return row.outcome ?? "failed";
         const exit = row.task?.exitCode ?? row.exitCode;
         return exit !== undefined ? `exit ${exit}` : "failed";
       }

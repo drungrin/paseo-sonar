@@ -58,7 +58,10 @@ interface Row {
 }
 
 interface Turn {
+  /** Unique in the model: the provider's turn id, with a suffix when the provider reused it. */
   key: string;
+  /** The provider's turn id. A restarted Claude process numbers its turns from 1 again. */
+  id: string | undefined;
   startedAt: number;
   endedAt?: number;
   rows: Row[];
@@ -322,7 +325,10 @@ export class SonarModel {
       case "turn_completed":
       case "turn_failed":
       case "turn_canceled": {
-        const turn = this.turn(event.turnId, at);
+        // The end of a turn never opens one: it closes the newest turn with that id, or the newest turn without an id.
+        const turn = event.turnId === undefined ? this.turns[this.turns.length - 1] : [...this.turns].reverse().find((candidate) => candidate.id === event.turnId);
+        this.setContext(event.usage?.contextWindowUsedTokens, event.usage?.contextWindowMaxTokens);
+        if (!turn) return;
         turn.endedAt = at;
         for (const row of turn.rows) {
           if (row.kind === "tool" && row.status === "running") {
@@ -331,7 +337,6 @@ export class SonarModel {
             row.measured = true;
           }
         }
-        this.setContext(event.usage?.contextWindowUsedTokens, event.usage?.contextWindowMaxTokens);
         return;
       }
       case "usage_updated":
@@ -408,14 +413,15 @@ export class SonarModel {
     this.subagents.set(update.subagentId, entry);
   }
 
+  /**
+   * The turn an item belongs to: the newest turn when it has no id or the same id. An id that comes back after another turn
+   * began is a new turn, not the old one: a restarted Claude process numbers its turns from 1 again.
+   */
   private turn(turnId: string | undefined, at: number): Turn {
     const last = this.turns[this.turns.length - 1];
-    if (turnId === undefined) {
-      if (last) return last;
-    } else {
-      for (let i = this.turns.length - 1; i >= 0; i--) if (this.turns[i]!.key === turnId) return this.turns[i]!;
-    }
-    const turn: Turn = { key: turnId ?? `turn-at-${at}`, startedAt: at, rows: [] };
+    if (last && (turnId === undefined || last.id === turnId)) return last;
+    const reused = turnId !== undefined && this.turns.some((turn) => turn.id === turnId);
+    const turn: Turn = { key: reused ? `${turnId}@${this.serial++}` : (turnId ?? `turn-at-${at}`), id: turnId, startedAt: at, rows: [] };
     this.turns.push(turn);
     return turn;
   }
@@ -607,7 +613,9 @@ export class SonarModel {
             resolved.push({ row, turn, status: gaveUp ? "ok" : "running", background: !gaveUp });
             return;
           }
-          resolved.push({ row, turn, status: row.status, endedAt: row.endedAt, background: false, subagent });
+          // A call in the foreground ends with its turn; one still marked running after a later turn began never said how it ended.
+          const stale = row.status === "running" && turn !== lastTurn;
+          resolved.push({ row, turn, status: stale ? "canceled" : row.status, endedAt: row.endedAt, background: false, subagent });
           return;
         }
         const next = turn.rows[index + 1];
@@ -694,7 +702,7 @@ export class SonarModel {
 
     const numbered = !this.hasOlder;
     const labelOf = (turn: Turn, index: number) => {
-      const number = numbered ? String(index + 1) : turnNumberFromId(turn.key);
+      const number = numbered ? String(index + 1) : turn.id ? turnNumberFromId(turn.id) : null;
       return number ? `TURN ${number}` : "TURN";
     };
     const turnViews: TurnView[] = [];

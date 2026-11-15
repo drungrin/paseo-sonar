@@ -271,6 +271,48 @@ describe("turn numbers", () => {
   });
 });
 
+describe("a restarted provider process", () => {
+  // Claude numbers turns from 1 again after its process restarts; the old turns stay in the history.
+  const restarted: EntryLike[] = [
+    { turnId: "foreground-turn-1", provider: "claude", timestamp: at(0), item: { type: "user_message", text: "first" } },
+    { turnId: "foreground-turn-1", provider: "claude", timestamp: at(5), item: tool("old-ls", "Bash", { type: "shell", command: "ls" }, "running") },
+    { turnId: "foreground-turn-2", provider: "claude", timestamp: at(60), item: { type: "user_message", text: "second" } },
+    { turnId: "foreground-turn-2", provider: "claude", timestamp: at(65), item: { type: "assistant_message", text: "Done before the restart." } },
+    { turnId: "foreground-turn-1", provider: "claude", timestamp: at(3600), item: { type: "user_message", text: "after the restart" } },
+    { turnId: "foreground-turn-1", provider: "claude", timestamp: at(3605), item: tool("new-cat", "Bash", { type: "shell", command: "cat notes.md" }, "running") },
+  ];
+
+  it("opens a new turn when an old turn id comes back, and keeps its work at the top", () => {
+    const model = new SonarModel();
+    model.load(restarted, { hasOlder: false, maxSeq: 6 });
+    const view = model.view(T0 + 3_610_000, running);
+    expect(view.turns.map((turn) => turn.label)).toEqual(["TURN 3", "TURN 2", "TURN 1"]);
+    expect(new Set(view.turns.map((turn) => turn.key)).size).toBe(3);
+    expect(view.turns[0]!.rows[0]).toMatchObject({ title: "cat notes.md", live: true });
+    expect(view.clock).toBe("NOW · 10S");
+    expect(view.headline.title).toBe("Running cat");
+    expect(view.parallel).toBeNull();
+  });
+
+  it("stops counting a call as running once a later turn began", () => {
+    const model = new SonarModel();
+    model.load(restarted, { hasOlder: false, maxSeq: 6 });
+    const view = model.view(T0 + 3_610_000, running);
+    expect(view.runningCount).toBe(1);
+    expect(view.turns[2]!.rows.find((row) => row.title === "ls")).toMatchObject({ status: "canceled", live: false });
+  });
+
+  it("closes the newest turn with an id and never opens one at its end", () => {
+    const model = new SonarModel();
+    model.load(restarted, { hasOlder: false, maxSeq: 6 });
+    model.applyStream({ type: "turn_completed", turnId: "foreground-turn-1" }, at(3700));
+    model.applyStream({ type: "turn_completed", turnId: "foreground-turn-9" }, at(3701));
+    const view = model.view(T0 + 3_710_000, idle);
+    expect(view.turns).toHaveLength(3);
+    expect(view.turns[0]!.rows[0]).toMatchObject({ title: "cat notes.md", status: "ok" });
+  });
+});
+
 describe("row order", () => {
   it("puts background work at the top of the newest turn", () => {
     const model = new SonarModel();

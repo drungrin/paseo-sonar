@@ -52,12 +52,13 @@ Helpers are recognized by file name and place (a skill's `scripts/` folder, a pa
 - Press the Sonar control in an agent's composer.
 - Or type `/sonar` in the composer, or choose **Open Sonar** in the Command Center (**Ctrl+K**, **⌘K** on macOS).
 
-Sonar opens in the Explorer, beside the chat, and follows the agent in focus in that workspace: switch agent tabs and it switches with you. When no agent of the workspace has focus it keeps the one it showed last, or the workspace's most recent agent. It reopens with the workspace. The sidebar line is on by default; turn it off under the sidebar's **Show** menu (**Sonar activity**).
+Sonar lives in the Explorer, beside the chat, one per workspace, and follows the agent in focus there: switch agent tabs and it switches with you. The composer control, `/sonar` and **Open Sonar** bring the open one to the front rather than opening another. When no agent of the workspace has focus it keeps the one it showed last, or the workspace's most recent agent. It reopens with the workspace. The sidebar line is on by default; turn it off under the sidebar's **Show** menu (**Sonar activity**).
 
 ## Limits
 
 - **Times from history.** Paseo's timeline keeps one time per tool call, when it started. Sonar times the calls it watches and keeps those times in the tab's state, so they survive a reload; a call that ran while no Sonar tab was open shows no time. Background tasks get theirs from their notice of the end, and turn lengths are always shown.
 - **Subagents already running.** Paseo sends plugins each provider subagent's updates but not the list of those already running, so the steps of a Claude subagent that was working before the panel opened show from its next one on. The row itself is live from the start when the agent launched it in the background with a notice to follow.
+- **The Explorer's + menu.** Paseo hides Files and Changes from that menu while they are open, but it has no such switch for plugin panels: Sonar stays listed there, and choosing it opens a second Sonar tab.
 - **Sidebar failures.** The sidebar line follows a workspace's agent live only while it runs, so a failure shows there when the app saw it happen.
 - **Hooks.** Claude Code hooks do not reach Paseo's timeline, so the Hooks tile shows `–`.
 - **Exit codes.** Codex reports them. Claude reports a failure, not its code, for a call in the foreground; Sonar reads the code from the failure's text when it is there, and shows `exit 0` for Claude's successful commands.

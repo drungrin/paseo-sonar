@@ -9,8 +9,8 @@ const ICON = { svg: SONAR_SVG };
 
 export default function contribute(client: PluginClientContext) {
   const cleanups = [
-    // One Sonar per workspace, in the Explorer beside the chat; it follows the agent in focus.
-    client.addWorkspacePanel({ id: PANEL, title: "Sonar", icon: ICON, locations: ["explorer", "workspace"], Component: SonarPanel }),
+    // One Sonar per workspace, in the Explorer only, beside the chat; it follows the agent in focus.
+    client.addWorkspacePanel({ id: PANEL, title: "Sonar", icon: ICON, locations: ["explorer"], Component: SonarPanel }),
 
     client.addComposerItem({
       id: "sonar",

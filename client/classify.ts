@@ -34,6 +34,8 @@ export interface Classified {
   outcome?: string;
   /** The output carried a receipt Sonar could read, which says more than the exit code. */
   receipt?: boolean;
+  /** The Paseo agent a `create_agent` call started, by the id its result names. */
+  childAgentId?: string;
 }
 
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -400,6 +402,20 @@ function byName(call: ToolCallLike): Classified {
     return same(title, station, doing);
   }
   const mcp = mcpParts(name);
+  if (mcp?.server === "paseo" && mcp.tool === "create_agent") {
+    // The result names the new agent: `{"agentId": "…", "status": …}`.
+    const child = /"agentId"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/i.exec(outputText(call.detail))?.[1];
+    const title = oneLine(str(input.title), 60);
+    const provider = str(input.provider);
+    return {
+      station: "agents",
+      title: title ? `Paseo agent: ${title}` : "Paseo agent",
+      doing: "Starting a Paseo agent",
+      tool: "paseo",
+      facts: provider ? [provider] : [],
+      ...(child ? { childAgentId: child } : {}),
+    };
+  }
   if (mcp) {
     const tool = words(mcp.tool);
     if ((mcp.server === "paseo" && mcp.tool.startsWith("browser_")) || BROWSER_SERVERS.test(mcp.server)) {

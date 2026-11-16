@@ -1,16 +1,21 @@
-// The Sonar panel: what the agent does now, the route it took, its turns with rows that open to
-// their details, and where the work went.
-import type { PluginAgentPanelProps } from "@getpaseo/plugin/client";
+// The Sonar panel: what the followed agent does now, the route it took, its turns with rows that
+// open to their details, and where the work went. One panel per workspace follows the agent in focus.
+import { useTabState, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { Icon, Loading, ScrollView } from "@getpaseo/plugin/client/ui";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { z } from "zod";
 import { AccessibilityInfo, Animated, Easing, Platform, Pressable, Text, View, type TextProps } from "react-native";
 import { mix, withAlpha } from "./colors";
 import type { DetailView, RouteStop, RowView, SonarView, TurnView } from "./model";
 import { STATION_NAMES, STATIONS, stationSvg, type StationId } from "./stations";
-import { useSonar, type SonarAgent } from "./use-sonar";
+import { useFollowedAgent } from "./focus";
+import { KEPT_DURATIONS, useSonar, type Durations, type SonarAgent } from "./use-sonar";
 
-type Theme = PluginAgentPanelProps["theme"];
-type Navigation = PluginAgentPanelProps["navigation"];
+type Theme = PluginWorkspacePanelProps["theme"];
+type Navigation = PluginWorkspacePanelProps["navigation"];
+
+/** Stops a background item of the followed agent, by its id. */
+const StopContext = createContext<(itemId: string) => Promise<void>>(async () => {});
 
 // ---- Type -------------------------------------------------------------------------------------
 
@@ -421,6 +426,8 @@ function RowDetails(props: {
 }) {
   const { theme, row, more } = props;
   const { colors } = theme;
+  const stopItem = useContext(StopContext);
+  const [stopping, setStopping] = useState<"idle" | "stopping" | "failed">("idle");
   const detail = props.details(row.key);
   if (!detail) return null;
   const links: ReactNode[] = [];
@@ -438,6 +445,28 @@ function RowDetails(props: {
     );
     if (detail.cwd) body.push(<Mono key="cwd" style={{ ...mono, color: muted }}>cwd {detail.cwd}</Mono>);
     if (detail.note) body.push(<Mono key="note" style={{ ...mono, color: detail.failed ? colors.statusDanger : muted }}>{detail.note}</Mono>);
+    if (detail.stop) {
+      const itemId = detail.stop;
+      const label = stopping === "stopping" ? "Stopping…" : stopping === "failed" ? "Could not stop · try again" : "Stop";
+      links.push(
+        <Link
+          key="stop"
+          theme={theme}
+          label={label}
+          onPress={() => {
+            if (stopping === "stopping") return;
+            setStopping("stopping");
+            stopItem(itemId).then(
+              () => setStopping("idle"),
+              (cause: unknown) => {
+                console.warn("[paseo-sonar] could not stop background work", cause);
+                setStopping("failed");
+              },
+            );
+          }}
+        />,
+      );
+    }
     if (detail.output) {
       const { lines, total } = more ? { lines: detail.output.split("\n").slice(-400), total: detail.output.split("\n").length } : lastLines(detail.output, PREVIEW_LINES);
       body.push(
@@ -493,6 +522,12 @@ function RowDetails(props: {
       );
     }
     if (detail.log) body.push(<Mono key="log" numberOfLines={more ? undefined : 3} style={{ ...mono, color: muted }}>{detail.log}</Mono>);
+  } else if (detail.kind === "child") {
+    const tone = detail.tone === "err" ? colors.statusDanger : detail.tone === "warn" ? colors.statusWarning : muted;
+    body.push(<Text key="title" style={{ fontSize: 13, lineHeight: 18, color: withAlpha(colors.foreground, 0.9) }}>{detail.title}</Text>);
+    body.push(<Mono key="state" style={{ ...mono, color: tone }}>paseo agent · {detail.state}</Mono>);
+    const openChild = props.navigation?.openAgent;
+    if (openChild) links.push(<Link key="child" theme={theme} label="Open this agent →" onPress={() => openChild({ agentId: detail.agentId })} />);
   } else if (detail.kind === "text") {
     if (detail.text) {
       const lines = detail.text.split("\n");
@@ -559,7 +594,7 @@ function Legend({ theme, view }: { theme: Theme; view: SonarView }) {
     const tone: Tone = view.liveStations.has(station) ? "live" : view.errorStations.has(station) ? "err" : "normal";
     return { key: station, name: STATION_NAMES[station], svg: stationSvg(station), value: String(count), label: `${STATION_NAMES[station]}: ${count}`, tone, dim: count === 0 };
   });
-  tiles.push({ key: "hooks", name: "Hooks", svg: stationSvg("hooks"), value: "–", label: "Hooks: Paseo 0.15 does not report them", tone: "normal", dim: true });
+  tiles.push({ key: "hooks", name: "Hooks", svg: stationSvg("hooks"), value: "–", label: "Hooks: Paseo does not report them to plugins", tone: "normal", dim: true });
   return (
     <View style={{ paddingTop: 12, paddingBottom: 12, paddingHorizontal: 9, borderTopWidth: 1, borderTopColor: colors.border, gap: 6 }}>
       <View style={{ paddingHorizontal: 7 }}>
@@ -592,8 +627,49 @@ function Legend({ theme, view }: { theme: Theme; view: SonarView }) {
 
 // ---- Panel ------------------------------------------------------------------------------------
 
-export function SonarPanel({ theme, params, tab, navigation }: PluginAgentPanelProps) {
-  const state = useSonar(params.agentId, tab);
+/** What the panel's tab keeps: measured durations by call id, and the agent it followed last. */
+const TAB_STATE = z.object({
+  durations: z.record(z.string(), z.number()).catch({}),
+  last: z.string().nullable().catch(null),
+});
+type TabState = z.infer<typeof TAB_STATE>;
+const EMPTY_TAB: TabState = { durations: {}, last: null };
+
+/** One Sonar per workspace, following the agent in focus there. */
+export function SonarPanel({ theme, workspaceId, tab, navigation }: PluginWorkspacePanelProps) {
+  const [saved, setSaved] = useTabState(tab, TAB_STATE, EMPTY_TAB);
+  const latest = useRef(saved);
+  latest.current = saved;
+  const agentId = useFollowedAgent(workspaceId, saved.last);
+
+  useEffect(() => {
+    if (agentId && agentId !== latest.current.last) setSaved({ ...latest.current, last: agentId });
+  }, [agentId, setSaved]);
+
+  const durations = useMemo<Durations>(
+    () => ({
+      saved: saved.durations,
+      save(next) {
+        const kept = Object.fromEntries(Object.entries(next).slice(-KEPT_DURATIONS));
+        setSaved({ ...latest.current, durations: kept });
+      },
+    }),
+    [saved.durations, setSaved],
+  );
+
+  if (!agentId) {
+    return (
+      <View testID="sonar-panel" style={{ flex: 1, backgroundColor: theme.colors.surface0, padding: 16, justifyContent: "center" }}>
+        <Text style={{ fontSize: 13, lineHeight: 19, color: theme.colors.foregroundMuted }}>Open an agent in this workspace and Sonar follows it here.</Text>
+      </View>
+    );
+  }
+  // A fresh trace per agent: switching agents never mixes their rows.
+  return <AgentTrace key={agentId} theme={theme} agentId={agentId} durations={durations} navigation={navigation} />;
+}
+
+function AgentTrace({ theme, agentId, durations, navigation }: { theme: Theme; agentId: string; durations: Durations; navigation: Navigation }) {
+  const state = useSonar(agentId, durations);
   const still = useReducedMotion();
   const { colors } = theme;
   const [open, setOpen] = useState<string | null>(null);
@@ -612,17 +688,19 @@ export function SonarPanel({ theme, params, tab, navigation }: PluginAgentPanelP
   );
   const rows = useMemo<RowsState>(() => ({ open, toggle, more, toggleMore }), [open, toggle, more, toggleMore]);
   const turns = useMemo(() => (state.phase === "ready" ? state.view.turns.slice(0, MAX_TURNS) : []), [state]);
+  const stop = state.phase === "ready" ? state.stop : undefined;
+  const stopItem = useCallback(async (itemId: string) => stop?.(itemId), [stop]);
 
   if (state.phase === "loading") {
     return (
-      <View style={{ flex: 1, backgroundColor: colors.surface0, alignItems: "center", justifyContent: "center" }}>
+      <View testID="sonar-panel" style={{ flex: 1, backgroundColor: colors.surface0, alignItems: "center", justifyContent: "center" }}>
         <Loading />
       </View>
     );
   }
   if (state.phase === "error") {
     return (
-      <View style={{ flex: 1, backgroundColor: colors.surface0, padding: 16, gap: 12, justifyContent: "center" }}>
+      <View testID="sonar-panel" style={{ flex: 1, backgroundColor: colors.surface0, padding: 16, gap: 12, justifyContent: "center" }}>
         <Text style={{ color: colors.statusDanger, fontSize: 13 }}>Sonar could not read this agent's timeline: {state.message}</Text>
         <Pressable accessibilityRole="button" onPress={state.retry} style={{ alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, backgroundColor: colors.surface2 }}>
           <Text style={{ color: colors.foreground, fontSize: 13 }}>Try again</Text>
@@ -633,31 +711,33 @@ export function SonarPanel({ theme, params, tab, navigation }: PluginAgentPanelP
 
   const { view, agent, details } = state;
   return (
-    <View testID="sonar-panel" style={{ flex: 1, backgroundColor: colors.surface0 }}>
-      <NowSection theme={theme} view={view} agent={agent} still={still} />
-      <RouteSection theme={theme} route={view.route} />
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingTop: 14, paddingHorizontal: 16, paddingBottom: 14 }}>
-        {view.empty ? (
-          <Text style={{ fontSize: 13, color: colors.foregroundMuted }}>Sonar draws this agent's steps here as they happen.</Text>
-        ) : (
-          turns.map((turn, index) => (
-            <TurnBlock
-              key={turn.key}
-              theme={theme}
-              turn={turn}
-              newest={index === 0}
-              unfolded={unfolded.has(turn.key)}
-              unfold={() => setUnfolded((current) => new Set(current).add(turn.key))}
-              rows={rows}
-              details={details}
-              navigation={navigation}
-              agentId={params.agentId}
-              still={still}
-            />
-          ))
-        )}
-      </ScrollView>
-      <Legend theme={theme} view={view} />
-    </View>
+    <StopContext.Provider value={stopItem}>
+      <View testID="sonar-panel" style={{ flex: 1, backgroundColor: colors.surface0 }}>
+        <NowSection theme={theme} view={view} agent={agent} still={still} />
+        <RouteSection theme={theme} route={view.route} />
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingTop: 14, paddingHorizontal: 16, paddingBottom: 14 }}>
+          {view.empty ? (
+            <Text style={{ fontSize: 13, color: colors.foregroundMuted }}>Sonar draws this agent's steps here as they happen.</Text>
+          ) : (
+            turns.map((turn, index) => (
+              <TurnBlock
+                key={turn.key}
+                theme={theme}
+                turn={turn}
+                newest={index === 0}
+                unfolded={unfolded.has(turn.key)}
+                unfold={() => setUnfolded((current) => new Set(current).add(turn.key))}
+                rows={rows}
+                details={details}
+                navigation={navigation}
+                agentId={agentId}
+                still={still}
+              />
+            ))
+          )}
+        </ScrollView>
+        <Legend theme={theme} view={view} />
+      </View>
+    </StopContext.Provider>
   );
 }

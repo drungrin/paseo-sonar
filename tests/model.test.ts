@@ -327,3 +327,87 @@ describe("row order", () => {
     expect(model.view(T0 + 30_000, idle).turns[0]!.rows.map((row) => row.title)).toEqual(["make build", "Reply", "New message"]);
   });
 });
+
+describe("Paseo 0.16 lists", () => {
+  const launched: EntryLike[] = [
+    { turnId: "foreground-turn-1", provider: "claude", timestamp: at(0), item: { type: "user_message", text: "go" } },
+    {
+      turnId: "foreground-turn-1",
+      provider: "claude",
+      timestamp: at(2),
+      item: tool("bg", "Bash", { type: "shell", command: "sleep 900", output: "Command running in background with ID: bavjj7hgz. Output is being written to: /tmp/x" }),
+    },
+    { turnId: "foreground-turn-1", provider: "claude", timestamp: at(4), item: { type: "assistant_message", text: "launched" } },
+  ];
+  const item = (id: string, command = "sleep 900") => ({ id, kind: "shell", description: `Run ${command}`, command, startedAt: at(2), canStop: true });
+
+  it("keeps a background row live while Paseo lists it, and offers to stop it", () => {
+    const model = new SonarModel();
+    model.load(launched, { hasOlder: false, maxSeq: 3 });
+    model.setBackgroundWork([item("bavjj7hgz")], T0 + 60_000);
+    const view = model.view(T0 + 60_000, idle);
+    expect(view.backgroundCount).toBe(1);
+    const row = view.turns[0]!.rows[0]!;
+    expect(row).toMatchObject({ title: "sleep 900", live: true, background: true });
+    expect(model.details(row.key, T0 + 60_000)).toMatchObject({ kind: "shell", stop: "bavjj7hgz" });
+  });
+
+  it("ends a background row Paseo no longer lists, even without a notice", () => {
+    const model = new SonarModel();
+    model.load(launched, { hasOlder: false, maxSeq: 3 });
+    model.setBackgroundWork([], T0 + 60_000);
+    const view = model.view(T0 + 60_000, idle);
+    expect(view.backgroundCount).toBe(0);
+    const row = view.turns[0]!.rows.find((candidate) => candidate.title === "sleep 900")!;
+    expect(row).toMatchObject({ live: false, status: "ok" });
+    expect(model.details(row.key, T0 + 60_000)).toMatchObject({ note: "background task bavjj7hgz · ended without a notice", stop: null });
+  });
+
+  it("does not end a task the list has not caught up with yet", () => {
+    const model = new SonarModel();
+    model.load(launched, { hasOlder: false, maxSeq: 3 });
+    model.setBackgroundWork([], T0 + 3_000);
+    expect(model.view(T0 + 3_000, idle).backgroundCount).toBe(1);
+  });
+
+  it("shows listed work no row stands for at the top of the newest turn", () => {
+    const model = new SonarModel();
+    model.load(launched, { hasOlder: false, maxSeq: 3 });
+    model.setBackgroundWork([item("bavjj7hgz"), item("older1", "npm run dev")], T0 + 60_000);
+    const view = model.view(T0 + 60_000, idle);
+    expect(view.backgroundCount).toBe(2);
+    // Linked rows first, then older work no row stands for.
+    expect(view.turns[0]!.rows.slice(0, 2).map((row) => row.key)).toEqual([view.turns[0]!.rows[0]!.key, "bg:older1"]);
+    expect(view.turns[0]!.rows[1]).toMatchObject({ title: "Run npm run dev", meta: "shell · background", live: true });
+    expect(model.details("bg:older1", T0 + 60_000)).toMatchObject({ kind: "shell", command: "npm run dev", stop: "older1" });
+  });
+
+  it("ties a Paseo agent to the create_agent call that started it", () => {
+    const child = "0f3a9c2b-7d1e-4f5a-8b6c-9d0e1f2a3b4c";
+    const created: EntryLike[] = [
+      { turnId: "foreground-turn-1", provider: "claude", timestamp: at(0), item: { type: "user_message", text: "split the work" } },
+      {
+        turnId: "foreground-turn-1",
+        provider: "claude",
+        timestamp: at(2),
+        item: tool("mk", "mcp__paseo__create_agent", { type: "unknown", input: { title: "Review T004", provider: "claude" }, output: `{"agentId":"${child}","type":"claude","status":"running"}` }),
+      },
+    ];
+    const model = new SonarModel();
+    model.load(created, { hasOlder: false, maxSeq: 2 });
+    const base = { id: child, title: "Review T004", createdAt: at(2), updatedAt: at(30) };
+    model.setChildAgent({ ...base, status: "running" });
+    let view = model.view(T0 + 40_000, idle);
+    expect(view.backgroundCount).toBe(1);
+    expect(view.turns[0]!.rows[0]).toMatchObject({ title: "Paseo agent: Review T004", meta: "paseo agent · running · claude", live: true, background: true });
+    expect(model.details(view.turns[0]!.rows[0]!.key, T0)).toEqual({ kind: "child", agentId: child, title: "Review T004", state: "running", tone: "normal" });
+
+    model.setChildAgent({ ...base, status: "idle", requiresAttention: true, attentionReason: "permission" });
+    view = model.view(T0 + 40_000, idle);
+    expect(view.turns[0]!.rows.find((row) => row.title === "Paseo agent: Review T004")).toMatchObject({ meta: "paseo agent · needs you · claude", metaTone: "warn", live: false });
+
+    model.setChildAgent({ id: "other", title: "Docs pass", status: "running", createdAt: at(1), updatedAt: at(5) });
+    view = model.view(T0 + 40_000, idle);
+    expect(view.turns[0]!.rows.find((row) => row.key === "child:other")).toMatchObject({ title: "Docs pass", meta: "paseo agent · running", live: true });
+  });
+});

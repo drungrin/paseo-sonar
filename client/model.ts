@@ -53,6 +53,8 @@ interface Row {
   detail?: Record<string, unknown>;
   error?: string;
   task?: TaskState;
+  /** The Paseo agent this call created, by its id. */
+  childAgentId?: string;
   /** Measured from its own start and end events, so worth keeping across reloads. */
   measured?: boolean;
 }
@@ -115,6 +117,27 @@ export type SubagentUpdateLike =
       };
     }
   | { kind: "timeline"; parentAgentId: string; subagentId: string; item: TimelineItemLike; timestamp: string };
+
+/** A shell or monitor Paseo reports as still running after its turn (`agent.backgroundWork`). */
+export interface BackgroundItemLike {
+  id: string;
+  kind: string;
+  description: string | null;
+  command?: string;
+  startedAt: string;
+  canStop?: boolean;
+}
+
+/** A Paseo agent this agent created, from the agent list. */
+export interface ChildAgentLike {
+  id: string;
+  title: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  requiresAttention?: boolean;
+  attentionReason?: string | null;
+}
 
 /** An `AgentStreamEvent` as the live subscription delivers it. */
 export interface StreamEventLike {
@@ -192,7 +215,8 @@ export interface SonarView {
 
 /** What an expanded row shows. */
 export type DetailView =
-  | { kind: "shell"; command: string; cwd: string | null; output: string; failed: boolean; note: string | null }
+  | { kind: "shell"; command: string; cwd: string | null; output: string; failed: boolean; note: string | null; stop: string | null }
+  | { kind: "child"; agentId: string; title: string; state: string; tone: "normal" | "err" | "warn" }
   | { kind: "diff"; lines: { sign: "+" | "-" | " " | "@"; text: string }[] }
   | { kind: "agent"; task: string | null; steps: { text: string; when: string; tone: "normal" | "err" }[]; log: string }
   | { kind: "text"; text: string }
@@ -258,8 +282,24 @@ export function shortModel(model: string): string {
 
 const time = (value: string | number): number => (typeof value === "number" ? value : Date.parse(value));
 
-/** Background work with no word of its end is taken as over after this long. */
+/** Background work with no word of its end is taken as over after this long, when Paseo gives no list. */
 const TASK_GIVE_UP_MS = 12 * 3_600_000;
+/** A task missing from a list read this soon after its launch may not be listed yet. */
+const LIST_GRACE_MS = 10_000;
+
+/** How a Paseo agent reads as a row status. */
+function childStatus(child: ChildAgentLike): RowStatus {
+  if (child.status === "running" || child.status === "initializing") return "running";
+  return child.status === "error" ? "err" : "ok";
+}
+
+/** What a Paseo agent is doing, in a word. */
+function childWord(child: ChildAgentLike): string {
+  if (child.requiresAttention && child.attentionReason === "permission") return "needs you";
+  if (child.status === "initializing") return "starting";
+  if (child.status === "error") return "failed";
+  return child.status;
+}
 /** Thinking shorter than this is left out of the turn. */
 const SHORT_THINKING_MS = 1000;
 /** Strings kept per call for its expanded row. */
@@ -287,6 +327,23 @@ export class SonarModel {
   private subagents = new Map<string, Subagent>();
   /** Durations measured earlier, by call id, from the tab's saved state. */
   private remembered = new Map<string, number>();
+  /** What Paseo says still runs in the background, and when it said so; null until it has. */
+  private liveWork: { items: Map<string, BackgroundItemLike>; at: number } | null = null;
+  private children = new Map<string, ChildAgentLike>();
+
+  /** The background work Paseo reports for the agent now. It decides which background rows still run. */
+  setBackgroundWork(items: readonly BackgroundItemLike[], at: number): void {
+    this.liveWork = { items: new Map(items.map((item) => [item.id, item])), at };
+  }
+
+  /** A Paseo agent this agent created, as the agent list reports it now. */
+  setChildAgent(agent: ChildAgentLike): void {
+    this.children.set(agent.id, agent);
+  }
+
+  removeChildAgent(agentId: string): void {
+    this.children.delete(agentId);
+  }
 
   /** Starts over from a page of history, oldest first. */
   load(entries: readonly EntryLike[], options: { hasOlder: boolean; maxSeq: number }): void {
@@ -353,7 +410,7 @@ export class SonarModel {
   }
 
   /**
-   * Applies a provider subagent update. Paseo 0.15 offers plugins these updates but not the list
+   * Applies a provider subagent update. Paseo offers plugins these updates but not the list
    * they follow, so a subagent already running when the panel opens appears at its next step.
    */
   applySubagent(update: SubagentUpdateLike): void {
@@ -548,7 +605,7 @@ export class SonarModel {
     if (existing) {
       const wasRunning = existing.status === "running";
       // What an earlier update said and this one does not, it no longer says.
-      Object.assign(existing, { failure: undefined, exitCode: undefined, verdict: undefined, outcome: undefined, receipt: undefined, ...facts, status, detail, error });
+      Object.assign(existing, { failure: undefined, exitCode: undefined, verdict: undefined, outcome: undefined, receipt: undefined, childAgentId: undefined, ...facts, status, detail, error });
       if (wasRunning && status !== "running" && live) {
         existing.endedAt = at;
         existing.measured = true;
@@ -594,7 +651,7 @@ export class SonarModel {
     const launchedBy = new Map<string, Subagent>();
     for (const work of this.subagents.values()) if (work.toolCallId) launchedBy.set(work.toolCallId, work);
 
-    const resolved: { row: Row; turn: Turn; status: RowStatus; endedAt?: number; background: boolean; subagent?: Subagent }[] = [];
+    const resolved: { row: Row; turn: Turn; status: RowStatus; endedAt?: number; background: boolean; subagent?: Subagent; child?: ChildAgentLike }[] = [];
     for (const turn of this.turns) {
       turn.rows.forEach((row, index) => {
         if (row.kind === "tool" || row.kind === "compaction" || row.kind === "notice") {
@@ -603,10 +660,23 @@ export class SonarModel {
             resolved.push({ row, turn, status: subagent.status, endedAt: subagent.endedAt, background: subagent.status === "running", subagent });
             return;
           }
+          const child = row.childAgentId ? this.children.get(row.childAgentId) : undefined;
+          if (child && row.status === "ok") {
+            const status = childStatus(child);
+            resolved.push({ row, turn, status, endedAt: status === "running" ? undefined : time(child.updatedAt), background: status === "running", child });
+            return;
+          }
           if (row.task && row.status === "ok") {
             const { task } = row;
             if (task.endedAt !== undefined) {
               resolved.push({ row, turn, status: task.status ?? "ok", endedAt: task.endedAt, background: false });
+              return;
+            }
+            const work = this.liveWork;
+            if (work && task.taskId) {
+              // Paseo's list says what still runs: a task missing from a list read well after its launch ended without a notice.
+              const live = work.items.has(task.taskId) || work.at < row.startedAt + LIST_GRACE_MS;
+              resolved.push({ row, turn, status: live ? "running" : "ok", background: live });
               return;
             }
             const gaveUp = now > (task.expiresAt ?? row.startedAt + TASK_GIVE_UP_MS) + 60_000;
@@ -640,6 +710,10 @@ export class SonarModel {
       const { row, status } = entry;
       if (row.kind === "thinking") return { meta: modelFacts.join(" · "), tone: "normal" };
       if (row.kind !== "tool") return { meta: row.facts.join(" · "), tone: status === "err" ? "err" : "normal" };
+      if (entry.child) {
+        const word = childWord(entry.child);
+        return { meta: ["paseo agent", word, ...row.facts].filter(Boolean).join(" · "), tone: status === "err" ? "err" : word === "needs you" ? "warn" : "normal" };
+      }
       if (row.station === "agents" && row.detail?.type === "sub_agent") {
         return { meta: [...row.facts, entry.background ? "background" : ""].filter(Boolean).join(" · "), tone: status === "err" ? "err" : "normal" };
       }
@@ -720,6 +794,20 @@ export class SonarModel {
       const end = turn.endedAt ?? (active ? undefined : turn.rows[turn.rows.length - 1]?.startedAt);
       turnViews.push({ key: turn.key, label: labelOf(turn, index), startedAt: turn.startedAt, duration: end !== undefined ? end - turn.startedAt : undefined, active, rows });
     });
+    // Background work and Paseo agents no row stands for: launched before the loaded history, or by an earlier process.
+    const linkedTasks = new Set(resolved.map((entry) => entry.row.task?.taskId).filter(Boolean));
+    const looseWork = this.liveWork ? [...this.liveWork.items.values()].filter((item) => !linkedTasks.has(item.id)) : [];
+    const linkedChildren = new Set(resolved.map((entry) => entry.row.childAgentId).filter(Boolean));
+    const looseChildren = [...this.children.values()].filter((child) => !linkedChildren.has(child.id) && childStatus(child) === "running");
+    const looseRow = (key: string, station: StationId, title: string, meta: string, since: number): RowView => ({
+      key, station, title, meta, metaTone: "normal", status: "running", live: true, trailing: formatDuration(now - since), startedAt: since, pinned: true, background: true,
+    });
+    for (const item of looseWork) {
+      const since = time(item.startedAt);
+      carried.unshift(looseRow(`bg:${item.id}`, "shell", oneLine(item.description || item.command || item.kind, 80), `${item.kind} · background`, Number.isNaN(since) ? now : since));
+    }
+    for (const child of looseChildren) carried.unshift(looseRow(`child:${child.id}`, "agents", oneLine(child.title || "Paseo agent", 60), `paseo agent · ${childWord(child)}`, time(child.createdAt)));
+
     turnViews.reverse();
     if (carried.length > 0 && turnViews[0]) turnViews[0].rows.unshift(...carried.reverse());
     const visibleTurns = turnViews.filter((turn) => turn.rows.length > 0);
@@ -732,10 +820,11 @@ export class SonarModel {
     const unlinked = [...this.subagents.values()].filter(
       (work) => work.status === "running" && !(work.toolCallId && this.byCall.has(work.toolCallId)),
     );
-    const backgroundCount = resolved.filter((entry) => entry.background).length + unlinked.length;
+    const backgroundCount = resolved.filter((entry) => entry.background).length + unlinked.length + looseWork.length + looseChildren.length;
 
     const liveStations = new Set(resolved.filter((entry) => entry.status === "running").map((entry) => entry.row.station));
-    if (unlinked.length > 0) liveStations.add("agents");
+    if (unlinked.length > 0 || looseChildren.length > 0) liveStations.add("agents");
+    if (looseWork.length > 0) liveStations.add("shell");
     const errorStations = new Set(
       resolved.filter((entry) => entry.status === "err" && entry.turn === lastTurn).map((entry) => entry.row.station),
     );
@@ -752,7 +841,8 @@ export class SonarModel {
       }
       route.push({ station: row.station, state });
     }
-    if (unlinked.length > 0) route.push({ station: "agents", state: "live" });
+    if (unlinked.length > 0 || looseChildren.length > 0) route.push({ station: "agents", state: "live" });
+    if (looseWork.length > 0) route.push({ station: "shell", state: "live" });
 
     const newest = [...foreground].sort((a, b) => b.row.startedAt - a.row.startedAt);
     const lead = newest[0];
@@ -825,6 +915,17 @@ export class SonarModel {
 
   /** What the expanded row `key` shows. */
   details(key: string, now: number): DetailView | null {
+    if (key.startsWith("bg:")) {
+      const item = this.liveWork?.items.get(key.slice(3));
+      if (!item) return null;
+      const since = time(item.startedAt);
+      const note = `background ${item.kind} ${item.id}${Number.isNaN(since) ? "" : ` · running since ${formatClock(since)}`}`;
+      return { kind: "shell", command: item.command ?? item.description ?? "", cwd: null, output: "", failed: false, note, stop: item.canStop ? item.id : null };
+    }
+    if (key.startsWith("child:")) {
+      const child = this.children.get(key.slice(6));
+      return child ? childDetail(child) : null;
+    }
     let row: Row | undefined;
     for (const turn of this.turns) {
       row = turn.rows.find((candidate) => candidate.key === key);
@@ -835,22 +936,30 @@ export class SonarModel {
     const detail = row.detail ?? {};
     const str = (value: unknown): string => (typeof value === "string" ? value : "");
 
+    const child = row.childAgentId ? this.children.get(row.childAgentId) : undefined;
+    if (child) return childDetail(child);
+
     if (row.command !== undefined) {
       const cwd = str(detail.cwd);
       const task = row.task;
       if (task) {
         // What a background call returned is only its launch notice; its notice of the end is what says something.
         const failed = task.status === "err";
+        const listed = task.taskId ? this.liveWork?.items.get(task.taskId) : undefined;
+        const unlisted = !listed && this.liveWork !== null && this.liveWork.at >= row.startedAt + LIST_GRACE_MS;
         const note = task.endedAt !== undefined
           ? `background task ${task.taskId ?? ""} · ended ${formatClock(task.endedAt)}${task.exitCode !== undefined ? ` · exit ${task.exitCode}` : ""}`
-          : `background task ${task.taskId ?? ""} · running since ${formatClock(row.startedAt)}${task.expiresAt ? ` · gives up at ${formatClock(task.expiresAt, false)}` : ""}`;
-        return { kind: "shell", command: row.command, cwd: cwd ? shortPath(cwd) : null, output: "", failed, note: note.replace("task  ·", "task ·") };
+          : unlisted
+            ? `background task ${task.taskId ?? ""} · ended without a notice`
+            : `background task ${task.taskId ?? ""} · running since ${formatClock(row.startedAt)}${!this.liveWork && task.expiresAt ? ` · gives up at ${formatClock(task.expiresAt, false)}` : ""}`;
+        const stop = task.endedAt === undefined && listed?.canStop ? listed.id : null;
+        return { kind: "shell", command: row.command, cwd: cwd ? shortPath(cwd) : null, output: "", failed, note: note.replace("task  ·", "task ·"), stop };
       }
       const failed = row.status === "err";
       // "Tool call failed" says nothing the red row does not; the command's own output may.
       const error = row.error && !/^tool call failed\.?$/i.test(row.error.trim()) ? row.error : "";
       const output = (failed ? error || outputText(detail) : outputText(detail) || error).replace(/\s+$/, "");
-      return { kind: "shell", command: row.command, cwd: cwd ? shortPath(cwd) : null, output, failed, note: null };
+      return { kind: "shell", command: row.command, cwd: cwd ? shortPath(cwd) : null, output, failed, note: null, stop: null };
     }
     if (detail.type === "edit") {
       const diff = str(detail.unifiedDiff);
@@ -883,6 +992,12 @@ export class SonarModel {
     const output = row.status === "err" ? row.error || outputText(detail) : outputText(detail) || str(detail.content) || str(detail.result);
     return { kind: "fields", fields, output: output.trim() };
   }
+}
+
+/** What an opened Paseo agent row shows: the agent and where it stands. */
+function childDetail(child: ChildAgentLike): DetailView {
+  const word = childWord(child);
+  return { kind: "child", agentId: child.id, title: child.title || "Paseo agent", state: word, tone: child.status === "error" ? "err" : word === "needs you" ? "warn" : "normal" };
 }
 
 /** The number a provider wrote in a turn id: Claude counts from 1, Codex from 0. */
